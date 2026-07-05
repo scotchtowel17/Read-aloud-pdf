@@ -179,6 +179,8 @@ window.__startApp = function(){
   const S = { pages:[], queue:[], idx:0, playing:false, paused:false, rate:1, voice:null, utter:null, curBoxes:[], _voices:[], mode:"system", neuralVoice:null };
   const NE = { tts:null, ctx:null, src:null, run:0, playIdx:0, loading:false };
   const sleep = (ms)=> new Promise(r=>setTimeout(r,ms));
+  function saveSet(k,v){ try{ if(v==null) localStorage.removeItem(k); else localStorage.setItem(k,v); }catch(e){} }
+  function getSet(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
   async function detectWebGPU(){ try{ if(!navigator.gpu) return false; const a=await navigator.gpu.requestAdapter(); return !!a; }catch(e){ return false; } }
   async function importKokoro(){
     const urls=["https://cdn.jsdelivr.net/npm/kokoro-js@1/+esm","https://cdn.jsdelivr.net/npm/kokoro-js@1/dist/kokoro.web.js"];
@@ -212,15 +214,17 @@ window.__startApp = function(){
     els.voice.innerHTML="";
     list.forEach((v,i)=>{ const o=document.createElement("option"); o.value=String(i); o.textContent=labelVoice(v); els.voice.appendChild(o); });
     S._voices=list;
-    if(!S.voice){ S.voice=list[0]; els.voice.value="0"; }
+    if(!S.voice){ const _sv=getSet("ra_voice"); let _i=_sv?list.findIndex(v=>v.name===_sv):-1; if(_i<0)_i=0; S.voice=list[_i]; els.voice.value=String(_i); }
   }
   if(synth){ synth.onvoiceschanged=loadVoices; loadVoices(); }
   els.voice.addEventListener("change", ()=>{
     if(S.mode==="neural"){
       S.neuralVoice = els.voice.value || S.neuralVoice;
+      saveSet("ra_nvoice", S.neuralVoice);
       if(S.playing && !S.paused) speakNeuralFrom(NE.playIdx);   // apply the new voice immediately
     } else {
       S.voice = S._voices[+els.voice.value] || null;
+      if(S.voice) saveSet("ra_voice", S.voice.name);
     }
   });
 
@@ -228,11 +232,13 @@ window.__startApp = function(){
     S.rate=parseFloat(els.rate.value);
     els.rateval.textContent=S.rate.toFixed(1)+"x";
     els.rate.setAttribute("aria-valuetext", S.rate.toFixed(1)+"x");
+    saveSet("ra_rate", els.rate.value);
     if(S.playing && !S.paused){
       if(S.mode==="neural"){ speakNeuralFrom(NE.playIdx); }
       else if(synth){ synth.cancel(); speakNext(); }
     }
   });
+  (function(){ const _r=getSet("ra_rate"); if(_r!=null){ els.rate.value=_r; S.rate=parseFloat(_r)||1; els.rateval.textContent=S.rate.toFixed(1)+"x"; els.rate.setAttribute("aria-valuetext",S.rate.toFixed(1)+"x"); } })();
 
   let toastT;
   function toast(msg){ els.toast.textContent=msg; els.toast.classList.add("show"); clearTimeout(toastT); toastT=setTimeout(()=>els.toast.classList.remove("show"),2900); }
@@ -444,7 +450,7 @@ window.__startApp = function(){
 
   // ---------------- Load / render ----------------
   async function openFile(file){
-    stopReading(); S.pages=[]; S.queue=[];
+    stopReading(); S.pages=[]; S.queue=[]; S.docKey="pos_"+file.name+"_"+file.size;
     els.stage.innerHTML='<div class="loading"><span class="dot"></span>Rendering '+escapeHtml(file.name)+'</div>';
     try{
       const buf=await file.arrayBuffer();
@@ -512,8 +518,12 @@ window.__startApp = function(){
 
       buildQueue();
       updateControls();   // enable Play as soon as the queue is ready (start from the top without tapping first)
-      if(!S.queue.length) toast("Loaded, but no selectable text. A scanned PDF needs OCR first.");
-      else showHint();
+      if(!S.queue.length){ toast("Loaded, but no selectable text. A scanned PDF needs OCR first."); }
+      else {
+        const _pos=parseInt(getSet(S.docKey)||"",10);
+        if(_pos>0 && _pos<S.queue.length){ S.idx=_pos; highlight(S.queue[_pos]); toast("Resumed where you left off \u2014 press Play"); }
+        else showHint();
+      }
     }catch(err){
       console.error(err);
       els.stage.innerHTML='<div class="drop"><h1>Could not open that file</h1><p>'+escapeHtml(err.message||String(err))+'</p><label class="filebtn" for="file">Try another file</label></div>';
@@ -558,6 +568,7 @@ window.__startApp = function(){
     const item=S.queue[S.idx];
     if(!item){ finishReading(); return; }
     highlight(item);
+    if(S.docKey) saveSet(S.docKey, String(S.idx));
     const u=new SpeechSynthesisUtterance(item.spoken);
     u.rate=S.rate; u.pitch=1;
     if(S.voice){ u.voice=S.voice; u.lang=S.voice.lang; }
@@ -583,7 +594,7 @@ window.__startApp = function(){
     NE.run++; if(NE.src){ try{ NE.src.stop(); }catch(e){} NE.src=null; } if(NE.ctx && NE.ctx.state==="running"){ try{ NE.ctx.suspend(); }catch(e){} }
     stopKeepAlive(); clearHighlight(); updateControls();
   }
-  function finishReading(){ S.playing=false; S.paused=false; S.utter=null; S.idx=0; stopKeepAlive(); clearHighlight(); updateControls(); announce("Finished reading"); }
+  function finishReading(){ S.playing=false; S.paused=false; S.utter=null; S.idx=0; stopKeepAlive(); clearHighlight(); if(S.docKey) saveSet(S.docKey, null); updateControls(); announce("Finished reading"); }
 
   function clearHighlight(){ S.curBoxes.forEach(b=>b.remove()); S.curBoxes=[]; }
   function highlight(item){
@@ -661,7 +672,8 @@ window.__startApp = function(){
     ids.sort((a,b)=> (a[0]<b[0]?-1:a[0]>b[0]?1:0) || a.localeCompare(b));
     els.voice.innerHTML="";
     ids.forEach(id=>{ const o=document.createElement("option"); o.value=id; o.textContent=prettyVoice(id); els.voice.appendChild(o); });
-    S.neuralVoice = ids.indexOf("af_heart")>=0 ? "af_heart" : ids[0];
+    const _nv=getSet("ra_nvoice");
+    S.neuralVoice = (_nv && ids.indexOf(_nv)>=0) ? _nv : (ids.indexOf("af_heart")>=0 ? "af_heart" : ids[0]);
     els.voice.value=S.neuralVoice;
   }
   async function speakNeuralFrom(startIdx){
@@ -694,6 +706,7 @@ window.__startApp = function(){
       const r=await resultOf(NE.playIdx);
       if(runId!==NE.run) break;
       highlight(S.queue[NE.playIdx]);
+      if(S.docKey) saveSet(S.docKey, String(NE.playIdx));
       await playPCM(r.pcm, r.sr, runId);
       if(runId!==NE.run) break;
       delete results[NE.playIdx];   // release the played chunk
@@ -730,6 +743,7 @@ window.__startApp = function(){
   }
 
   function escapeHtml(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+  window.addEventListener("pagehide", ()=>{ if(S.docKey && S.playing) saveSet(S.docKey, String(S.mode==="neural"?NE.playIdx:S.idx)); });
   window.addEventListener("pagehide", ()=>{ if(synth) synth.cancel(); });
 };
 
