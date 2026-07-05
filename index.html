@@ -470,7 +470,15 @@ window.__startApp = function(){
       els.stage.innerHTML="";
       const targetW=Math.min((els.main.clientWidth||900)-28,900);
 
-      // Pass 1: render + collect line geometry
+      // Pass 1: lay out every page and extract its text/geometry now, but rasterize
+      // each page's canvas only when it nears the viewport, so large PDFs open fast
+      // and use little memory. Text/geometry is always available so the read queue and
+      // tap-to-read work on any page before it is painted.
+      if(S._io){ try{ S._io.disconnect(); }catch(e){} }
+      const io = ("IntersectionObserver" in window)
+        ? new IntersectionObserver((ents)=>{ for(const e of ents){ if(e.isIntersecting && e.target.__render) e.target.__render(); } }, { root: els.main, rootMargin: "1000px 0px" })
+        : null;
+      S._io = io;
       const pageData=[];
       for(let n=1;n<=pdf.numPages;n++){
         const page=await pdf.getPage(n);
@@ -487,7 +495,16 @@ window.__startApp = function(){
         const tag=document.createElement("div"); tag.className="pagenum"; tag.textContent="Page "+n+" / "+pdf.numPages; wrap.appendChild(tag);
         els.stage.appendChild(wrap);
 
-        await page.render({ canvasContext:canvas.getContext("2d"), viewport, transform: DPR!==1?[DPR,0,0,DPR,0,0]:null }).promise;
+        // rasterize at most once, on demand
+        let _done=false, _busy=false;
+        const doRender=()=>{ if(_done||_busy) return Promise.resolve();
+          _busy=true;
+          return page.render({ canvasContext:canvas.getContext("2d"), viewport, transform: DPR!==1?[DPR,0,0,DPR,0,0]:null }).promise
+            .then(()=>{ _done=true; wrap.classList.add("rendered"); if(io) io.unobserve(wrap); })
+            .catch(()=>{}).finally(()=>{ _busy=false; });
+        };
+        wrap.__render=doRender;
+        if(io) io.observe(wrap); else doRender();
 
         const tc=await page.getTextContent();
         const items=[];
@@ -498,7 +515,7 @@ window.__startApp = function(){
           items.push({str:s, x:r.x, y:r.y, w:r.w, h:r.h});
         }
         const lines=groupLines(items);
-        pageData.push({overlay, wrap, lines, pageH:viewport.height, logicalW:viewport.width, logicalH:viewport.height});
+        pageData.push({overlay, wrap, lines, pageH:viewport.height, logicalW:viewport.width, logicalH:viewport.height, render:doRender});
       }
 
       // detect repeated headers / footers across the document
@@ -515,7 +532,7 @@ window.__startApp = function(){
           if(!spoken) continue;
           sentences.push({ spoken, startChar:s.start, rects:mergeRects(s.start,s.end,map) });
         }
-        const pageObj={ overlay:pd.overlay, logicalW:pd.logicalW, logicalH:pd.logicalH, map, sentences };
+        const pageObj={ overlay:pd.overlay, logicalW:pd.logicalW, logicalH:pd.logicalH, map, sentences, render:pd.render };
         if(!sentences.length && !kept.length){
           const note=document.createElement("div"); note.className="notext"; note.textContent="No selectable text on this page"; pd.wrap.appendChild(note);
         }
@@ -613,6 +630,7 @@ window.__startApp = function(){
   function clearHighlight(){ S.curBoxes.forEach(b=>b.remove()); S.curBoxes=[]; }
   function highlight(item){
     clearHighlight();
+    if(item.page && item.page.render) item.page.render();   // make sure the page under the highlight is painted
     const ov=item.page.overlay;
     const sx=(item.page.logicalW>0)?(ov.offsetWidth/item.page.logicalW):1;
     const sy=(item.page.logicalH>0)?(ov.offsetHeight/item.page.logicalH):1;
