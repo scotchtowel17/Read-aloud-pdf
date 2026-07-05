@@ -823,7 +823,10 @@ window.__startApp = function(){
   function ocrWords(res){
     const d=(res&&res.data)||{};
     if(Array.isArray(d.words)&&d.words.length) return d.words;
-    const out=[]; (d.blocks||[]).forEach(bl=>(bl.paragraphs||[]).forEach(pa=>(pa.lines||[]).forEach(ln=>(ln.words||[]).forEach(w=>out.push(w))))); return out;
+    const out=[]; (d.blocks||[]).forEach(bl=>(bl.paragraphs||[]).forEach(pa=>(pa.lines||[]).forEach(ln=>(ln.words||[]).forEach(w=>out.push(w)))));
+    if(out.length) return out;
+    (d.lines||[]).forEach(ln=>(ln.words||[]).forEach(w=>out.push(w)));   // fallback if only flat lines are present
+    return out;
   }
   function applyOcr(pageObj,res){
     const words=ocrWords(res); const items=[];
@@ -843,7 +846,7 @@ window.__startApp = function(){
       if(pageObj.render) await pageObj.render();
       const worker=await ensureOcr((m)=>ocrBanner(true, ocrLabel(m)));
       ocrBanner(true,"Reading scan\u2026");
-      const res=await worker.recognize(pageObj.canvas);
+      const res=await worker.recognize(pageObj.canvas, {}, { blocks:true });   // ask for blocks so word bounding boxes are returned
       applyOcr(pageObj,res);
       ocrBanner(false); buildQueue(); updateControls();
       const gi=S.queue.findIndex(q=>q.page===pageObj);
