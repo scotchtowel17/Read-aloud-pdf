@@ -87,6 +87,7 @@
   .hint b{color:var(--accent-ink)}
   #mode.on{background:var(--accent);border-color:var(--accent);color:#fff}
   .neuralbar{position:fixed;left:50%;bottom:calc(64px + var(--safe-b));transform:translateX(-50%);display:none;align-items:center;gap:10px;background:var(--ink);color:#fff;font-size:13px;padding:11px 16px;border-radius:11px;box-shadow:var(--shadow);z-index:50;max-width:90vw}
+  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
   @media (max-width:520px){
     .brand span{display:none}
     header{gap:8px;padding-top:calc(8px + var(--safe-t))}
@@ -101,22 +102,22 @@
 <header>
   <div class="brand"><b>Read Aloud</b><span>tap text to listen, works offline</span></div>
   <label class="filebtn" for="file" title="Open a PDF">
-    <svg class="ic" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h9l3 3h4v13H4z"/></svg>
+    <svg class="ic" aria-hidden="true" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h9l3 3h4v13H4z"/></svg>
     Open PDF
   </label>
-  <input type="file" id="file" accept="application/pdf">
+  <input type="file" id="file" accept="application/pdf" aria-label="Choose a PDF file">
   <div class="spacer"></div>
-  <button id="play" class="primary" disabled title="Play / Pause"><i class="ic ic-play"></i><span id="playlbl">Play</span></button>
-  <button id="stop" disabled title="Stop"><i class="ic ic-stop"></i>Stop</button>
-  <button id="mode" title="Switch between the instant system voice and the natural on-device voice">Voice: System</button>
+  <button id="play" class="primary" disabled title="Play / Pause" aria-label="Play" aria-keyshortcuts="Space"><i class="ic ic-play" aria-hidden="true"></i><span id="playlbl">Play</span></button>
+  <button id="stop" disabled title="Stop" aria-label="Stop"><i class="ic ic-stop" aria-hidden="true"></i>Stop</button>
+  <button id="mode" title="Switch between the instant system voice and the natural on-device voice" aria-pressed="false">Voice: System</button>
   <div class="ctl">
     <label for="rate">Speed</label>
-    <input type="range" id="rate" min="0.6" max="1.8" step="0.1" value="1">
+    <input type="range" id="rate" min="0.6" max="1.8" step="0.1" value="1" aria-label="Reading speed" aria-valuetext="1.0x">
     <span class="rateval" id="rateval">1.0x</span>
   </div>
   <div class="ctl">
     <label for="voice">Voice</label>
-    <select id="voice" title="Reading voice"></select>
+    <select id="voice" title="Reading voice" aria-label="Reading voice"></select>
   </div>
 </header>
 
@@ -130,7 +131,8 @@
   </div>
 </main>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div id="sr" class="sr-only" role="status" aria-live="polite"></div>
 
 <!-- application logic -->
 <script>
@@ -151,6 +153,7 @@ window.__startApp = function(){
     voice: document.getElementById("voice"),
     toast: document.getElementById("toast"),
     mode: document.getElementById("mode"),
+    sr: document.getElementById("sr"),
   };
 
   const S = { pages:[], queue:[], idx:0, playing:false, paused:false, rate:1, voice:null, utter:null, curBoxes:[], _voices:[], mode:"system", neuralVoice:null };
@@ -204,6 +207,7 @@ window.__startApp = function(){
   els.rate.addEventListener("input", ()=>{
     S.rate=parseFloat(els.rate.value);
     els.rateval.textContent=S.rate.toFixed(1)+"x";
+    els.rate.setAttribute("aria-valuetext", S.rate.toFixed(1)+"x");
     if(S.playing && !S.paused){
       if(S.mode==="neural"){ speakNeuralFrom(NE.playIdx); }
       else if(synth){ synth.cancel(); speakNext(); }
@@ -212,6 +216,7 @@ window.__startApp = function(){
 
   let toastT;
   function toast(msg){ els.toast.textContent=msg; els.toast.classList.add("show"); clearTimeout(toastT); toastT=setTimeout(()=>els.toast.classList.remove("show"),2900); }
+  function announce(msg){ if(els.sr) els.sr.textContent=msg; }   // screen-reader-only status updates
 
   els.file.addEventListener("change", e=>{ const f=e.target.files&&e.target.files[0]; if(f) openFile(f); });
   ["dragenter","dragover"].forEach(ev=>document.addEventListener(ev,e=>{ e.preventDefault(); els.drop&&els.drop.classList.add("hot"); }));
@@ -515,7 +520,7 @@ window.__startApp = function(){
   function startFrom(i){
     if(synth) synth.cancel();
     NE.run++; if(NE.src){ try{ NE.src.stop(); }catch(e){} NE.src=null; }
-    S.idx=i; S.playing=true; S.paused=false; updateControls();
+    S.idx=i; S.playing=true; S.paused=false; updateControls(); announce("Reading");
     if(S.mode==="neural"){ speakNeuralFrom(i); }
     else { startKeepAlive(); speakNext(); }
   }
@@ -541,7 +546,7 @@ window.__startApp = function(){
       if(!synth) return;
       if(S.paused){ synth.resume(); S.paused=false; } else { synth.pause(); S.paused=true; }
     }
-    updateControls();
+    updateControls(); announce(S.paused?"Paused":"Resumed");
   }
   function stopReading(){
     S.playing=false; S.paused=false; S.utter=null;
@@ -549,7 +554,7 @@ window.__startApp = function(){
     NE.run++; if(NE.src){ try{ NE.src.stop(); }catch(e){} NE.src=null; } if(NE.ctx && NE.ctx.state==="running"){ try{ NE.ctx.suspend(); }catch(e){} }
     stopKeepAlive(); clearHighlight(); updateControls();
   }
-  function finishReading(){ S.playing=false; S.paused=false; S.utter=null; S.idx=0; stopKeepAlive(); clearHighlight(); updateControls(); }
+  function finishReading(){ S.playing=false; S.paused=false; S.utter=null; S.idx=0; stopKeepAlive(); clearHighlight(); updateControls(); announce("Finished reading"); }
 
   function clearHighlight(){ S.curBoxes.forEach(b=>b.remove()); S.curBoxes=[]; }
   function highlight(item){
@@ -571,10 +576,11 @@ window.__startApp = function(){
     els.play.disabled=!ready; els.stop.disabled=!ready||!S.playing;
     els.play.querySelector("i").className="ic "+((S.playing&&!S.paused)?"ic-pause":"ic-play");
     els.playlbl.textContent=!S.playing?"Play":(S.paused?"Resume":"Pause");
+    els.play.setAttribute("aria-label", els.playlbl.textContent);
   }
 
   els.play.addEventListener("click", togglePlay);
-  els.stop.addEventListener("click", stopReading);
+  els.stop.addEventListener("click", ()=>{ stopReading(); announce("Stopped"); });
   if(els.mode){ els.mode.addEventListener("click", toggleMode); setModeUI(); }
   document.addEventListener("keydown", e=>{ if(e.code==="Space" && !/^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(document.activeElement.tagName)){ if(S.queue.length){ e.preventDefault(); togglePlay(); } } });
 
@@ -680,6 +686,7 @@ window.__startApp = function(){
     if(!els.mode) return;
     els.mode.textContent = S.mode==="neural" ? "Voice: Natural" : "Voice: System";
     els.mode.classList.toggle("on", S.mode==="neural");
+    els.mode.setAttribute("aria-pressed", S.mode==="neural"?"true":"false");
   }
   async function toggleMode(){
     if(S.mode==="system"){
@@ -690,7 +697,7 @@ window.__startApp = function(){
     } else {
       stopReading(); S.mode="system"; loadVoices();
     }
-    setModeUI();
+    setModeUI(); announce(S.mode==="neural"?"Natural voice selected":"System voice selected");
   }
 
   function escapeHtml(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
