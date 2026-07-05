@@ -216,6 +216,22 @@ window.__startApp = function(){
 
   if(!synth){ toast("This browser has no speech engine."); }
 
+  // ---------------- Diagnostics (append ?debug to the URL) + iOS audio unlock ----------------
+  const DEBUG = /[?&]debug/i.test(location.search);
+  const _dbg=[];
+  function dbg(m){ if(!DEBUG) return; try{ _dbg.push(m); if(_dbg.length>16)_dbg.shift(); let el=document.getElementById("dbgpanel"); if(!el){ el=document.createElement("pre"); el.id="dbgpanel"; el.style.cssText="position:fixed;left:6px;right:6px;bottom:6px;max-height:42vh;overflow:auto;z-index:999;margin:0;background:rgba(10,10,10,.92);color:#6f6;font:11px/1.35 ui-monospace,SFMono-Regular,monospace;padding:8px 10px;border-radius:8px;white-space:pre-wrap"; document.body.appendChild(el); } el.textContent=_dbg.join("\n"); }catch(e){} }
+  if(DEBUG){ dbg("iOS="+IS_IOS+" secureCtx="+window.isSecureContext+" crossOriginIsolated="+(self.crossOriginIsolated===true)); setTimeout(()=>dbg("system voices="+((synth&&synth.getVoices().length)||0)),500); }
+  let _audioUnlocked=false;
+  function unlockAudio(){
+    if(_audioUnlocked || !IS_IOS) return;
+    _audioUnlocked=true;
+    try{ if(synth){ const w=new SpeechSynthesisUtterance(" "); w.volume=0; synth.speak(w); } }catch(e){}   // prime iOS Web Speech within the gesture
+    try{ if(!NE.ctx) NE.ctx=new (window.AudioContext||window.webkitAudioContext)(); if(NE.ctx.state==="suspended") NE.ctx.resume(); const b=NE.ctx.createBuffer(1,1,22050); const s=NE.ctx.createBufferSource(); s.buffer=b; s.connect(NE.ctx.destination); s.start(0); }catch(e){}   // unlock Web Audio (neural voice) on iOS
+    dbg("audio unlocked ctx="+(NE.ctx&&NE.ctx.state));
+  }
+  document.addEventListener("pointerdown", unlockAudio, {passive:true});
+  document.addEventListener("touchend", unlockAudio, {passive:true});
+
   // ---------------- Voices (prefer smoother, offline-capable ones) ----------------
   function isEnhanced(v){ return /(enhanced|premium|neural|natural|siri)/i.test(v.name||""); }
   function voiceScore(v){
@@ -604,6 +620,7 @@ window.__startApp = function(){
     if(synth && (synth.speaking || synth.pending)) synth.cancel();   // avoid Chrome dropping the first utterance when cancel() precedes speak()
     NE.run++; if(NE.src){ try{ NE.src.stop(); }catch(e){} NE.src=null; }
     S.idx=i; S.playing=true; S.paused=false; updateControls(); updateProgress(i); announce("Reading");
+    dbg("PLAY mode="+S.mode+" idx="+i+" voices="+((synth&&synth.getVoices().length)||0)+" voice="+((S.voice&&S.voice.name)||"default"));
     if(S.mode==="neural"){ speakNeuralFrom(i); }
     else { startKeepAlive(); speakNext(); }
   }
@@ -613,6 +630,7 @@ window.__startApp = function(){
     const now=(typeof performance!=="undefined")?performance.now():0;
     const dt=now-(u.__t0||0);
     const expMs=((u.__len||0)/(22*Math.max(S.rate,0.5)))*1000;   // conservative lower bound (~22 chars/sec)
+    dbg((isError?"onerror":"onend")+" dt="+Math.round(dt)+"ms len="+(u.__len||0));
     const tooFast=(u.__len||0)>=12 && (isError || dt < Math.max(200, expMs*0.35));
     if(tooFast) _silent++; else _silent=0;
     if(_silent>=2){ _silent=0; stopReading(); toast("No sound is coming through. Check your volume and — on iPhone — the silent/ring switch, then press Play again."); announce("No audio detected"); }
@@ -627,6 +645,8 @@ window.__startApp = function(){
     u.rate=S.rate; u.pitch=1;
     if(S.voice){ u.voice=S.voice; u.lang=S.voice.lang; }
     u.__t0=(typeof performance!=="undefined")?performance.now():0; u.__len=(item.spoken||"").length;
+    u.onstart=()=>dbg("onstart");
+    dbg("speak len="+u.__len+" voice="+((S.voice&&S.voice.name)||"default")+" rate="+S.rate);
     u.onend=()=>{ if(!S.playing||u!==S.utter) return; audibleCheck(u,false); if(!S.playing) return; S.idx++; if(S.idx<S.queue.length) speakNext(); else finishReading(); };
     u.onerror=()=>{ if(!S.playing||u!==S.utter) return; audibleCheck(u,true); if(!S.playing) return; S.idx++; if(S.idx<S.queue.length) speakNext(); else finishReading(); };
     S.utter=u; synth.speak(u);
@@ -748,6 +768,7 @@ window.__startApp = function(){
     if(!NE.tts){ toast("Natural voice is not loaded."); return; }
     if(!NE.ctx){ try{ NE.ctx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){ toast("Audio is unavailable."); return; } }
     if(NE.ctx.state==="suspended"){ try{ await NE.ctx.resume(); }catch(e){} }
+    dbg("neural start ctx="+(NE.ctx&&NE.ctx.state));
     const results={}, waiters={}; const LOOK=2;
     const resultOf=(i)=> results[i]!==undefined ? Promise.resolve(results[i]) : new Promise(res=>{ (waiters[i]=waiters[i]||[]).push(res); });
     (async ()=>{
@@ -764,6 +785,7 @@ window.__startApp = function(){
         }catch(e){ console.error("neural generation failed",e); }
         if(runId!==NE.run) return;
         results[g]={pcm,sr}; (waiters[g]||[]).forEach(r=>r(results[g])); delete waiters[g];
+      dbg("gen idx="+g+" samples="+((pcm&&pcm.length)||0));
         g++;
       }
     })();
@@ -774,6 +796,7 @@ window.__startApp = function(){
       highlight(S.queue[NE.playIdx]);
       if(S.docKey) saveSet(S.docKey, String(NE.playIdx));
       updateProgress(NE.playIdx);
+      dbg("play idx="+NE.playIdx+" samples="+((r.pcm&&r.pcm.length)||0)+" ctx="+(NE.ctx&&NE.ctx.state));
       await playPCM(r.pcm, r.sr, runId);
       if(runId!==NE.run) break;
       delete results[NE.playIdx];   // release the played chunk
