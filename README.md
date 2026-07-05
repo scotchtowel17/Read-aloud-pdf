@@ -12,9 +12,12 @@ voice has been fetched — everything runs locally in the browser with no networ
 - **Two voices** — an instant system voice, or a natural on-device neural voice
   (kokoro-js / onnxruntime from jsDelivr, models from Hugging Face) that runs
   entirely in the browser.
+- **Reads scanned PDFs** — a page with no text layer gets a one-tap **on-device
+  OCR** (Tesseract.js) that runs locally, then reads and highlights the
+  recognized text like any other document.
 - **Offline-first** — the app shell (including PDF.js) is precached by a service
-  worker; the neural engine and downloaded voices are cached so each voice
-  crosses the network only once, and the model survives app updates.
+  worker; the neural engine, OCR engine, and downloaded voices/models are cached
+  so each crosses the network only once, and they survive app updates.
 - **Reading controls** — play / pause / stop, previous / next sentence, a speed
   slider, a live reading-progress bar, and keyboard shortcuts (Space, ← / →).
 - **Picks up where you left off** — speed, voice, theme, and per-document

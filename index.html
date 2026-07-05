@@ -106,6 +106,9 @@
   .layer .hl{position:absolute;background:var(--mark);border-radius:3px;box-shadow:inset 0 -2px 0 var(--mark-line);pointer-events:none}
   .pagenum{position:absolute;top:8px;right:10px;font-size:11px;color:var(--ink-soft);background:rgba(255,255,255,.85);border:1px solid var(--line);border-radius:20px;padding:2px 9px;pointer-events:none}
   .notext{position:absolute;left:50%;top:14px;transform:translateX(-50%);font-size:12px;color:#8a5a00;background:#fff6e2;border:1px solid #f0dfab;border-radius:20px;padding:3px 12px;pointer-events:none}
+  .ocrbtn{position:absolute;left:50%;top:36px;transform:translateX(-50%);z-index:6;font:inherit;font-weight:600;font-size:13px;color:#fff;background:var(--accent-fill);border:1px solid var(--accent-fill);border-radius:10px;padding:9px 15px;cursor:pointer;box-shadow:var(--shadow)}
+  .ocrbtn:hover{background:var(--accent-ink);border-color:var(--accent-ink)}
+  .ocrbtn:disabled{opacity:.6;cursor:default}
   .toast{position:fixed;left:50%;bottom:calc(26px + var(--safe-b));transform:translateX(-50%);background:var(--tip-bg);color:var(--tip-ink);font-size:13px;padding:10px 16px;border-radius:10px;box-shadow:var(--shadow);opacity:0;pointer-events:none;transition:opacity .2s;z-index:40;max-width:88vw;text-align:center}
   .toast.show{opacity:.96}
   .loading{display:flex;align-items:center;gap:10px;justify-content:center;color:var(--ink-soft);font-size:14px;padding:40px}
@@ -523,7 +526,7 @@ window.__startApp = function(){
           items.push({str:s, x:r.x, y:r.y, w:r.w, h:r.h});
         }
         const lines=groupLines(items);
-        pageData.push({overlay, wrap, lines, pageH:viewport.height, logicalW:viewport.width, logicalH:viewport.height, render:doRender});
+        pageData.push({overlay, wrap, canvas, lines, pageH:viewport.height, logicalW:viewport.width, logicalH:viewport.height, render:doRender});
       }
 
       // detect repeated headers / footers across the document
@@ -540,9 +543,12 @@ window.__startApp = function(){
           if(!spoken) continue;
           sentences.push({ spoken, startChar:s.start, rects:mergeRects(s.start,s.end,map) });
         }
-        const pageObj={ overlay:pd.overlay, logicalW:pd.logicalW, logicalH:pd.logicalH, map, sentences, render:pd.render };
+        const pageObj={ overlay:pd.overlay, canvas:pd.canvas, logicalW:pd.logicalW, logicalH:pd.logicalH, map, sentences, render:pd.render, isScan:false };
         if(!sentences.length && !kept.length){
-          const note=document.createElement("div"); note.className="notext"; note.textContent="No selectable text on this page"; pd.wrap.appendChild(note);
+          pageObj.isScan=true;   // no text layer: looks like a scanned page -> offer OCR
+          const btn=document.createElement("button"); btn.type="button"; btn.className="ocrbtn"; btn.textContent="Read this scan"; btn.setAttribute("aria-label","Run OCR to read this scanned page aloud");
+          btn.addEventListener("click", (e)=>{ e.stopPropagation(); onOcrPage(pageObj); });
+          pd.wrap.appendChild(btn); pageObj.scanBtn=btn;
         }
         S.pages.push(pageObj);
         pd.overlay.addEventListener("click", ev=>{
@@ -555,7 +561,7 @@ window.__startApp = function(){
 
       buildQueue();
       updateControls();   // enable Play as soon as the queue is ready (start from the top without tapping first)
-      if(!S.queue.length){ toast("Loaded, but no selectable text. A scanned PDF needs OCR first."); }
+      if(!S.queue.length){ toast(S.pages.some(p=>p.isScan) ? "This looks like a scanned PDF \u2014 tap \u201cRead this scan\u201d on a page to read it aloud." : "Loaded, but no selectable text."); }
       else {
         const _pos=parseInt(getSet(S.docKey)||"",10);
         if(_pos>0 && _pos<S.queue.length){ S.idx=_pos; highlight(S.queue[_pos]); toast("Resumed where you left off \u2014 press Play"); }
@@ -574,7 +580,7 @@ window.__startApp = function(){
   }
 
   function onPageClick(pageObj,x,y){
-    if(!pageObj.sentences.length){ toast("No text to read on this page."); return; }
+    if(!pageObj.sentences.length){ if(pageObj.isScan && !pageObj.ocred){ onOcrPage(pageObj); } else { toast("No text to read on this page."); } return; }
     let best=-1,bestD=Infinity;
     for(let k=0;k<pageObj.map.length;k++){
       const r=pageObj.map[k].rect;
@@ -793,6 +799,58 @@ window.__startApp = function(){
     setModeUI(); announce(S.mode==="neural"?"Natural voice selected":"System voice selected");
   }
 
+  // ---------------- OCR for scanned pages (on-device Tesseract.js, on demand) ----------------
+  const OCR = { worker:null, loading:null };
+  async function importTesseract(){
+    if(window.__mockTesseract) return window.__mockTesseract;   // test seam
+    const urls=["https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.esm.min.js","https://cdn.jsdelivr.net/npm/tesseract.js@5/+esm"];
+    let last; for(const u of urls){ try{ const m=await import(u); if(m && m.createWorker) return m; }catch(e){ last=e; } }
+    throw last || new Error("Could not load the OCR engine.");
+  }
+  function ocrLabel(m){ const s=(m&&m.status)||""; if(/recogn/i.test(s)) return "Reading scan\u2026 "+Math.round(((m&&m.progress)||0)*100)+"%"; if(/load|initial|download/i.test(s)) return "Preparing OCR\u2026"; return "Working\u2026"; }
+  function ocrBanner(show,msg){
+    let b=document.getElementById("ocrbar");
+    if(show){ if(!b){ b=document.createElement("div"); b.id="ocrbar"; b.className="neuralbar"; b.setAttribute("role","status"); b.setAttribute("aria-live","polite"); b.innerHTML='<span class="dot"></span><span id="ocrmsg"></span>'; document.body.appendChild(b); }
+      const m=document.getElementById("ocrmsg"); if(m) m.textContent=msg||"Working\u2026"; b.style.display="flex"; }
+    else if(b){ b.style.display="none"; }
+  }
+  async function ensureOcr(onProgress){
+    if(OCR.worker) return OCR.worker;
+    if(OCR.loading) return OCR.loading;
+    OCR.loading=(async()=>{ const T=await importTesseract(); const worker=await T.createWorker("eng", 1, { logger:onProgress }); OCR.worker=worker; return worker; })();
+    try{ return await OCR.loading; } finally{ OCR.loading=null; }
+  }
+  function ocrWords(res){
+    const d=(res&&res.data)||{};
+    if(Array.isArray(d.words)&&d.words.length) return d.words;
+    const out=[]; (d.blocks||[]).forEach(bl=>(bl.paragraphs||[]).forEach(pa=>(pa.lines||[]).forEach(ln=>(ln.words||[]).forEach(w=>out.push(w))))); return out;
+  }
+  function applyOcr(pageObj,res){
+    const words=ocrWords(res); const items=[];
+    for(const w of words){ const s=normChars(w.text||""); if(!s.trim()) continue; const b=w.bbox||{}; items.push({str:s, x:(b.x0||0)/DPR, y:(b.y0||0)/DPR, w:((b.x1||0)-(b.x0||0))/DPR, h:((b.y1||0)-(b.y0||0))/DPR}); }
+    const lines=groupLines(items);
+    const {text, map}=buildText(lines);
+    const sents=segment(text); const sentences=[];
+    for(const s of sents){ const spoken=expandWords(text.slice(s.start,s.end)); if(!spoken) continue; sentences.push({ spoken, startChar:s.start, rects:mergeRects(s.start,s.end,map) }); }
+    pageObj.map=map; pageObj.sentences=sentences; pageObj.ocred=true; pageObj.isScan=false;
+    if(pageObj.scanBtn){ pageObj.scanBtn.remove(); pageObj.scanBtn=null; }
+  }
+  async function onOcrPage(pageObj){
+    if(!pageObj || pageObj.ocring || pageObj.ocred) return;
+    pageObj.ocring=true; announce("Reading scan"); if(pageObj.scanBtn) pageObj.scanBtn.disabled=true;
+    ocrBanner(true,"Preparing OCR\u2026");
+    try{
+      if(pageObj.render) await pageObj.render();
+      const worker=await ensureOcr((m)=>ocrBanner(true, ocrLabel(m)));
+      ocrBanner(true,"Reading scan\u2026");
+      const res=await worker.recognize(pageObj.canvas);
+      applyOcr(pageObj,res);
+      ocrBanner(false); buildQueue(); updateControls();
+      const gi=S.queue.findIndex(q=>q.page===pageObj);
+      if(gi>=0){ startFrom(gi); } else { toast("No readable text found on this scan."); }
+    }catch(e){ console.error(e); ocrBanner(false); if(pageObj.scanBtn) pageObj.scanBtn.disabled=false; toast("Could not read this scan. Check your connection and try again."); }
+    finally{ pageObj.ocring=false; }
+  }
   function escapeHtml(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
   window.addEventListener("pagehide", ()=>{ if(S.docKey && S.playing) saveSet(S.docKey, String(S.mode==="neural"?NE.playIdx:S.idx)); });
   window.addEventListener("pagehide", ()=>{ if(synth) synth.cancel(); });

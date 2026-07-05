@@ -1,5 +1,5 @@
 // Read Aloud PDF - offline service worker
-const SHELL = "read-aloud-pdf-v6";
+const SHELL = "read-aloud-pdf-v7";
 const RUNTIME = "neural-runtime-v1";
 const ASSETS = ["./","./index.html","./pdf.min.js","./pdf.worker.min.js","./manifest.webmanifest","./apple-touch-icon.png","./icon-192.png","./icon-512.png","./icon-512-maskable.png"];
 self.addEventListener("install", (e)=>{ self.skipWaiting(); e.waitUntil(caches.open(SHELL).then((c)=>c.addAll(ASSETS)).catch(()=>{})); });
@@ -23,7 +23,7 @@ self.addEventListener("fetch", (e)=>{
   // Neural engine + ONNX runtime from jsDelivr: durably cache in Cache Storage so
   // the natural voice keeps working offline after one online session. Falls back to
   // a normal network fetch if anything goes wrong, so it can never break the app.
-  if(url.hostname === "cdn.jsdelivr.net"){
+  if(url.hostname === "cdn.jsdelivr.net" || url.hostname === "unpkg.com" || url.hostname === "tessdata.projectnaptha.com"){
     e.respondWith(
       caches.open(RUNTIME).then((cache)=> cache.match(req).then((hit)=> hit || fetch(req).then((res)=>{
         if(res && res.ok && res.type !== "opaque"){ cache.put(req, res.clone()); }
