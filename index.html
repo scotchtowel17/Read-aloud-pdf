@@ -707,7 +707,7 @@ window.__startApp = function(){
 (function(){
   var lib = window.pdfjsLib;
   if(!lib){ var s=document.getElementById("stage"); if(s){ s.innerHTML='<div class="drop"><h1>Engine failed to load</h1><p>The PDF engine did not initialize. Reinstall the app and try again.</p></div>'; } return; }
-  try{ if(lib.PDFWorkerUtil){ lib.PDFWorkerUtil.isWorkerDisabled = true; } }catch(e){}   // main-thread decode, no Worker
+  try{ if(lib.GlobalWorkerOptions){ lib.GlobalWorkerOptions.workerSrc = "pdf.worker.min.js"; } }catch(e){}   // render in the PDF.js worker (off the main thread); falls back to the main-thread handler if the worker cannot load
   window.__startApp();
 })();
 </script>

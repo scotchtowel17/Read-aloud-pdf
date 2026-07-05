@@ -1,5 +1,5 @@
 // Read Aloud PDF - offline service worker
-const SHELL = "read-aloud-pdf-v5";
+const SHELL = "read-aloud-pdf-v6";
 const RUNTIME = "neural-runtime-v1";
 const ASSETS = ["./","./index.html","./pdf.min.js","./pdf.worker.min.js","./manifest.webmanifest","./apple-touch-icon.png","./icon-192.png","./icon-512.png","./icon-512-maskable.png"];
 self.addEventListener("install", (e)=>{ self.skipWaiting(); e.waitUntil(caches.open(SHELL).then((c)=>c.addAll(ASSETS)).catch(()=>{})); });
