@@ -1,0 +1,13 @@
+# Read Aloud PDF — static site, no build step.
+[build]
+  publish = "."
+  command = ""
+
+# Cross-origin isolation for the on-device neural voice engine.
+# Also present in ./_headers (which Netlify serves); duplicated here so the
+# requirement travels with the repo config even if that file is ever changed.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Cross-Origin-Opener-Policy = "same-origin"
+    Cross-Origin-Embedder-Policy = "require-corp"
