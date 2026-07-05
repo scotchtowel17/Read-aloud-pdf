@@ -601,13 +601,22 @@ window.__startApp = function(){
   function stopKeepAlive(){ if(keepAlive){ clearInterval(keepAlive); keepAlive=null; } }
 
   function startFrom(i){
-    if(synth) synth.cancel();
+    if(synth && (synth.speaking || synth.pending)) synth.cancel();   // avoid Chrome dropping the first utterance when cancel() precedes speak()
     NE.run++; if(NE.src){ try{ NE.src.stop(); }catch(e){} NE.src=null; }
     S.idx=i; S.playing=true; S.paused=false; updateControls(); updateProgress(i); announce("Reading");
     if(S.mode==="neural"){ speakNeuralFrom(i); }
     else { startKeepAlive(); speakNext(); }
   }
 
+  let _silent=0;
+  function audibleCheck(u,isError){
+    const now=(typeof performance!=="undefined")?performance.now():0;
+    const dt=now-(u.__t0||0);
+    const expMs=((u.__len||0)/(22*Math.max(S.rate,0.5)))*1000;   // conservative lower bound (~22 chars/sec)
+    const tooFast=(u.__len||0)>=12 && (isError || dt < Math.max(200, expMs*0.35));
+    if(tooFast) _silent++; else _silent=0;
+    if(_silent>=2){ _silent=0; stopReading(); toast("No sound is coming through. Check your volume and — on iPhone — the silent/ring switch, then press Play again."); announce("No audio detected"); }
+  }
   function speakNext(){
     const item=S.queue[S.idx];
     if(!item){ finishReading(); return; }
@@ -617,8 +626,9 @@ window.__startApp = function(){
     const u=new SpeechSynthesisUtterance(item.spoken);
     u.rate=S.rate; u.pitch=1;
     if(S.voice){ u.voice=S.voice; u.lang=S.voice.lang; }
-    u.onend=()=>{ if(!S.playing||u!==S.utter) return; S.idx++; if(S.idx<S.queue.length) speakNext(); else finishReading(); };
-    u.onerror=()=>{ if(!S.playing||u!==S.utter) return; S.idx++; if(S.idx<S.queue.length) speakNext(); else finishReading(); };
+    u.__t0=(typeof performance!=="undefined")?performance.now():0; u.__len=(item.spoken||"").length;
+    u.onend=()=>{ if(!S.playing||u!==S.utter) return; audibleCheck(u,false); if(!S.playing) return; S.idx++; if(S.idx<S.queue.length) speakNext(); else finishReading(); };
+    u.onerror=()=>{ if(!S.playing||u!==S.utter) return; audibleCheck(u,true); if(!S.playing) return; S.idx++; if(S.idx<S.queue.length) speakNext(); else finishReading(); };
     S.utter=u; synth.speak(u);
   }
 
