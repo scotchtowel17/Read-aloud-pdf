@@ -1,11 +1,14 @@
 // Read Aloud PDF - offline service worker
-const SHELL = "read-aloud-pdf-v4";
+const SHELL = "read-aloud-pdf-v5";
 const RUNTIME = "neural-runtime-v1";
-const ASSETS = ["./","./index.html","./manifest.webmanifest","./apple-touch-icon.png","./icon-192.png","./icon-512.png","./icon-512-maskable.png"];
+const ASSETS = ["./","./index.html","./pdf.min.js","./pdf.worker.min.js","./manifest.webmanifest","./apple-touch-icon.png","./icon-192.png","./icon-512.png","./icon-512-maskable.png"];
 self.addEventListener("install", (e)=>{ self.skipWaiting(); e.waitUntil(caches.open(SHELL).then((c)=>c.addAll(ASSETS)).catch(()=>{})); });
 self.addEventListener("activate", (e)=>{
   e.waitUntil(caches.keys().then((keys)=>Promise.all(keys.map((k)=>{
-    if(k!==SHELL && k!==RUNTIME) return caches.delete(k);
+    // Only remove OUR OWN outdated shell/runtime caches. Never touch third-party
+    // caches such as transformers.js's "transformers-cache" (the ~80MB neural
+    // voice model), so the natural voice stays offline-ready across app updates.
+    if(k!==SHELL && k!==RUNTIME && /^(read-aloud-pdf|neural-runtime)-v/.test(k)) return caches.delete(k);
   }))).then(()=>self.clients.claim()));
 });
 self.addEventListener("fetch", (e)=>{

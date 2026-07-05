@@ -19,7 +19,8 @@ voice has been fetched — everything runs locally in the browser with no networ
 
 | File | Purpose |
 | --- | --- |
-| `index.html` | The app UI and logic. |
+| `index.html` | The app UI and logic (~37 KB). |
+| `pdf.min.js`, `pdf.worker.min.js` | Vendored PDF.js, loaded from `index.html` and precached for offline use. Kept as separate files so the browser can cache/compile them across loads instead of re-parsing a multi-MB inline script every visit. |
 | `sw.js` | Offline service worker (app-shell + runtime engine/voice caches). |
 | `manifest.webmanifest` | PWA manifest (name, icons, theme). |
 | `_headers` | Sets `COOP: same-origin` + `COEP: require-corp` so the WASM engine can use `SharedArrayBuffer` (cross-origin isolation). |
