@@ -33,5 +33,5 @@ COOP/COEP headers must be served on the app's HTML.
 
 ## Status
 
-Icons, manifest, service worker, and headers are in place. `index.html` is the
-remaining piece to add.
+Complete — `index.html`, the service worker, manifest, headers, and icons are
+all in place.

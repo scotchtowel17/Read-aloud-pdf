@@ -5,6 +5,7 @@
   "start_url": ".",
   "scope": ".",
   "display": "standalone",
+  "orientation": "portrait",
   "background_color": "#faf7f0",
   "theme_color": "#2f6f6a",
   "icons": [
@@ -26,6 +27,5 @@
       "type": "image/png",
       "purpose": "maskable"
     }
-  ],
-  "id": "./"
+  ]
 }
