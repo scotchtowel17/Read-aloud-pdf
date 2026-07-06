@@ -196,7 +196,7 @@ window.__startApp = function(){
     progbar: document.getElementById("progbar"),
   };
 
-  const APP_VERSION="2026-07-06.2";
+  const APP_VERSION="2026-07-06.3";
   const S = { pages:[], queue:[], idx:0, playing:false, paused:false, rate:1, voice:null, utter:null, curBoxes:[], _voices:[], mode:(getSet("ra_mode")||"neural"), neuralVoice:null };
   const NE = { tts:null, ctx:null, src:null, run:0, playIdx:0, loading:false, loadingPromise:null };
   const sleep = (ms)=> new Promise(r=>setTimeout(r,ms));
@@ -226,11 +226,20 @@ window.__startApp = function(){
   if(DEBUG){ dbg("ver="+APP_VERSION+" iOS="+IS_IOS+" secureCtx="+window.isSecureContext+" crossOriginIsolated="+(self.crossOriginIsolated===true)); setTimeout(()=>dbg("system voices="+((synth&&synth.getVoices().length)||0)),500); }
   let _audioUnlocked=false;
   function unlockAudio(){
-    if(_audioUnlocked || !IS_IOS) return;
-    _audioUnlocked=true;
-    try{ if(synth){ const w=new SpeechSynthesisUtterance(" "); w.volume=0; synth.speak(w); } }catch(e){}   // prime iOS Web Speech within the gesture
-    try{ if(!NE.ctx) NE.ctx=new (window.AudioContext||window.webkitAudioContext)(); if(NE.ctx.state==="suspended") NE.ctx.resume(); const b=NE.ctx.createBuffer(1,1,22050); const s=NE.ctx.createBufferSource(); s.buffer=b; s.connect(NE.ctx.destination); s.start(0); }catch(e){}   // unlock Web Audio (neural voice) on iOS
-    dbg("audio unlocked ctx="+(NE.ctx&&NE.ctx.state));
+    if(!IS_IOS) return;
+    try{
+      if(!NE.ctx) NE.ctx=new (window.AudioContext||window.webkitAudioContext)();
+      const needed = NE.ctx.state!=="running";                      // covers "suspended" AND iOS's non-standard "interrupted"
+      if(needed) NE.ctx.resume();
+      if(!_audioUnlocked){
+        _audioUnlocked=true;
+        try{ if(synth){ const w=new SpeechSynthesisUtterance(" "); w.volume=0; synth.speak(w); } }catch(e){}   // prime iOS Web Speech within the gesture
+        // keep-alive: a looping silent buffer keeps iOS from suspending the context while the model downloads
+        const b=NE.ctx.createBuffer(1,2205,22050); const s=NE.ctx.createBufferSource();
+        s.buffer=b; s.loop=true; s.connect(NE.ctx.destination); s.start(0); NE._keep=s;
+        dbg("audio unlocked ctx="+NE.ctx.state);
+      } else if(needed){ dbg("ctx resumed on tap -> "+NE.ctx.state); }
+    }catch(e){}
   }
   document.addEventListener("pointerdown", unlockAudio, {passive:true});
   document.addEventListener("touchend", unlockAudio, {passive:true});
@@ -805,7 +814,8 @@ window.__startApp = function(){
     if(NE.src){ try{ NE.src.stop(); }catch(e){} NE.src=null; }   // stop any buffer still playing so speed/voice changes never overlap
     if(!NE.tts){ toast("Natural voice is not loaded."); return; }
     if(!NE.ctx){ try{ NE.ctx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){ toast("Audio is unavailable."); return; } }
-    if(NE.ctx.state==="suspended"){ try{ await NE.ctx.resume(); }catch(e){} }
+    if(NE.ctx.state!=="running"){ try{ await NE.ctx.resume(); }catch(e){} }                    // covers "suspended" and iOS's "interrupted"
+    if(NE.ctx.state!=="running"){ await sleep(250); try{ await NE.ctx.resume(); }catch(e){} }   // iOS sometimes needs a beat
     dbg("neural start ctx="+(NE.ctx&&NE.ctx.state));
     if(NE.ctx.state!=="running"){   // e.g. iOS refused a non-gesture resume: never hang silently
       NE.run++; fallbackToSystem(); toast("The natural voice couldn't start audio \u2014 using the system voice.");
