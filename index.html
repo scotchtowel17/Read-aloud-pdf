@@ -196,13 +196,14 @@ window.__startApp = function(){
     progbar: document.getElementById("progbar"),
   };
 
-  const S = { pages:[], queue:[], idx:0, playing:false, paused:false, rate:1, voice:null, utter:null, curBoxes:[], _voices:[], mode:"system", neuralVoice:null };
-  const NE = { tts:null, ctx:null, src:null, run:0, playIdx:0, loading:false };
+  const S = { pages:[], queue:[], idx:0, playing:false, paused:false, rate:1, voice:null, utter:null, curBoxes:[], _voices:[], mode:(getSet("ra_mode")||"neural"), neuralVoice:null };
+  const NE = { tts:null, ctx:null, src:null, run:0, playIdx:0, loading:false, loadingPromise:null };
   const sleep = (ms)=> new Promise(r=>setTimeout(r,ms));
   function saveSet(k,v){ try{ if(v==null) localStorage.removeItem(k); else localStorage.setItem(k,v); }catch(e){} }
   function getSet(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
   async function detectWebGPU(){ try{ if(!navigator.gpu) return false; const a=await navigator.gpu.requestAdapter(); return !!a; }catch(e){ return false; } }
   async function importKokoro(){
+    if(window.__mockKokoro) return window.__mockKokoro;   // test seam
     const urls=["https://cdn.jsdelivr.net/npm/kokoro-js@1/+esm","https://cdn.jsdelivr.net/npm/kokoro-js@1/dist/kokoro.web.js"];
     let last;
     for(const u of urls){ try{ const m=await import(u); const K=m.KokoroTTS||m.default; if(K) return K; }catch(e){ last=e; } }
@@ -212,7 +213,7 @@ window.__startApp = function(){
   try{ if(navigator.storage && navigator.storage.persist){ navigator.storage.persist(); } }catch(e){}
   const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==="MacIntel" && (navigator.maxTouchPoints||0) > 1);
   const DPR = Math.min(window.devicePixelRatio || 1, 2);
-  const MAX_CHUNK = IS_IOS ? 420 : 240;   // iOS reads long utterances cleanly; other engines can cut past ~15s
+  const MAX_CHUNK = 360;   // keep whole sentences together for natural prosody; only very long sentences split, at clause punctuation
 
   if(!synth){ toast("This browser has no speech engine."); }
 
@@ -244,6 +245,7 @@ window.__startApp = function(){
   }
   function labelVoice(v){ return (v.name||"Voice")+" ("+v.lang+")"+(isEnhanced(v)?"  *":""); }
   function loadVoices(){
+    if(S.mode==="neural") return;   // neural mode shows its own curated Emma/George list
     const list = synth ? synth.getVoices() : [];
     if(!list.length) return;
     list.sort((a,b)=> voiceScore(b)-voiceScore(a) || (a.name||"").localeCompare(b.name||""));
@@ -253,6 +255,7 @@ window.__startApp = function(){
     if(!S.voice){ const _sv=getSet("ra_voice"); let _i=_sv?list.findIndex(v=>v.name===_sv):-1; if(_i<0)_i=0; S.voice=list[_i]; els.voice.value=String(_i); }
   }
   if(synth){ synth.onvoiceschanged=loadVoices; loadVoices(); }
+  if(S.mode==="neural"){ populateNeuralVoices(); }   // show Emma/George right away, before the model finishes loading
   els.voice.addEventListener("change", ()=>{
     if(S.mode==="neural"){
       S.neuralVoice = els.voice.value || S.neuralVoice;
@@ -584,6 +587,7 @@ window.__startApp = function(){
         else showHint();
       }
       updateProgress(S.idx);
+      if(S.mode==="neural" && S.queue.length && !NE.tts && !NE.loadingPromise){ loadNeural().catch(()=>{}); }   // warm up the natural voice in the background
     }catch(err){
       console.error(err);
       els.stage.innerHTML='<div class="drop"><h1>Could not open that file</h1><p>'+escapeHtml(err.message||String(err))+'</p><label class="filebtn" for="file">Try another file</label></div>';
@@ -621,7 +625,14 @@ window.__startApp = function(){
     NE.run++; if(NE.src){ try{ NE.src.stop(); }catch(e){} NE.src=null; }
     S.idx=i; S.playing=true; S.paused=false; updateControls(); updateProgress(i); announce("Reading");
     dbg("PLAY mode="+S.mode+" idx="+i+" voices="+((synth&&synth.getVoices().length)||0)+" voice="+((S.voice&&S.voice.name)||"default"));
-    if(S.mode==="neural"){ speakNeuralFrom(i); }
+    if(S.mode==="neural"){
+      if(NE.tts){ speakNeuralFrom(i); }
+      else {
+        neuralBanner(true,"Preparing the natural voice\u2026 (one-time setup)");
+        loadNeural().then(()=>{ if(S.playing && S.mode==="neural") speakNeuralFrom(i); })
+          .catch(()=>{ if(S.playing){ fallbackToSystem(); toast("Natural voice unavailable \u2014 using the system voice."); startKeepAlive(); speakNext(); } });
+      }
+    }
     else { startKeepAlive(); speakNext(); }
   }
 
@@ -728,24 +739,29 @@ window.__startApp = function(){
       const m=document.getElementById("neuralmsg"); if(m) m.textContent=msg||"Loading natural voice..."; b.style.display="flex";
     } else if(b){ b.style.display="none"; }
   }
-  async function loadNeural(){
-    if(NE.tts) return NE.tts;
-    if(NE.loading) return null;
-    NE.loading=true; neuralBanner(true,"Preparing natural voice engine...");
-    try{
-      const gpu=await detectWebGPU();
-      const KokoroTTS=await importKokoro();
-      NE.tts=await KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX",{
-        dtype: gpu ? "fp32" : "q8",
-        device: gpu ? "webgpu" : "wasm",
-        progress_callback:(p)=>{
-          if(p && p.status==="progress" && p.total){ neuralBanner(true,"Downloading voice model "+Math.round((p.loaded/p.total)*100)+"%"); }
-          else if(p && (p.status==="ready"||p.status==="done")){ neuralBanner(true,"Starting natural voice..."); }
-        }
-      });
-      populateNeuralVoices(); neuralBanner(false); return NE.tts;
-    } finally { NE.loading=false; }
+  function loadNeural(){
+    if(NE.tts) return Promise.resolve(NE.tts);
+    if(NE.loadingPromise) return NE.loadingPromise;
+    NE.loadingPromise=(async()=>{
+      neuralBanner(true,"Preparing the natural voice\u2026 (one-time setup)");
+      try{
+        const gpu=await detectWebGPU();
+        const KokoroTTS=await importKokoro();
+        NE.tts=await KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX",{
+          dtype: gpu ? "fp32" : "q8",
+          device: gpu ? "webgpu" : "wasm",
+          progress_callback:(p)=>{
+            if(p && p.status==="progress" && p.total){ neuralBanner(true,"Downloading the natural voice "+Math.round((p.loaded/p.total)*100)+"%"); }
+            else if(p && (p.status==="ready"||p.status==="done")){ neuralBanner(true,"Starting the natural voice\u2026"); }
+          }
+        });
+        populateNeuralVoices(); neuralBanner(false); return NE.tts;
+      } catch(e){ neuralBanner(false); throw e; }
+      finally { NE.loadingPromise=null; }
+    })();
+    return NE.loadingPromise;
   }
+  function fallbackToSystem(){ S.mode="system"; saveSet("ra_mode","system"); setModeUI(); loadVoices(); }
   function prettyVoice(id){
     const acc=id[0]==="a"?"US":id[0]==="b"?"UK":id[0];
     const gen=id[1]==="f"?"female":id[1]==="m"?"male":"";
@@ -753,14 +769,16 @@ window.__startApp = function(){
     return name.charAt(0).toUpperCase()+name.slice(1)+" ("+acc+(gen?" "+gen:"")+")";
   }
   function populateNeuralVoices(){
-    let ids=[];
-    try{ const v=NE.tts.list_voices?NE.tts.list_voices():(NE.tts.voices||{}); ids=Array.isArray(v)?v:Object.keys(v); }catch(e){ ids=[]; }
-    if(!ids.length) ids=["af_heart","af_bella","af_nicole","am_michael","am_fenrir","bf_emma","bm_george"];
-    ids.sort((a,b)=> (a[0]<b[0]?-1:a[0]>b[0]?1:0) || a.localeCompare(b));
+    // Just two clear, natural British voices — no wall of robotic options.
+    const NEURAL_VOICES=[{id:"bf_emma",label:"Emma \u2014 British female"},{id:"bm_george",label:"George \u2014 British male"}];
+    let avail=[];
+    try{ const v=(NE.tts&&NE.tts.list_voices)?NE.tts.list_voices():((NE.tts&&NE.tts.voices)||{}); avail=Array.isArray(v)?v:Object.keys(v); }catch(e){ avail=[]; }
+    let use=NEURAL_VOICES.filter(x=> !avail.length || avail.indexOf(x.id)>=0);
+    if(!use.length) use=NEURAL_VOICES;
     els.voice.innerHTML="";
-    ids.forEach(id=>{ const o=document.createElement("option"); o.value=id; o.textContent=prettyVoice(id); els.voice.appendChild(o); });
+    use.forEach(v=>{ const o=document.createElement("option"); o.value=v.id; o.textContent=v.label; els.voice.appendChild(o); });
     const _nv=getSet("ra_nvoice");
-    S.neuralVoice = (_nv && ids.indexOf(_nv)>=0) ? _nv : (ids.indexOf("af_heart")>=0 ? "af_heart" : ids[0]);
+    S.neuralVoice = (_nv && use.some(v=>v.id===_nv)) ? _nv : use[0].id;
     els.voice.value=S.neuralVoice;
   }
   async function speakNeuralFrom(startIdx){
@@ -778,7 +796,7 @@ window.__startApp = function(){
         if(g > NE.playIdx + LOOK){ await sleep(40); continue; }
         let pcm=new Float32Array(0), sr=24000;
         try{
-          const out=await NE.tts.generate(S.queue[g].spoken,{ voice:S.neuralVoice||"af_heart", speed:S.rate });
+          const out=await NE.tts.generate(S.queue[g].spoken,{ voice:S.neuralVoice||"bf_emma", speed:S.rate });
           let a = out && (out.audio!==undefined?out.audio:(out.data!==undefined?out.data:out));
           if(a && typeof a.getChannelData==="function") a=a.getChannelData(0);
           if(a && !(a instanceof Float32Array)) a=Float32Array.from(a);
@@ -830,6 +848,7 @@ window.__startApp = function(){
     } else {
       stopReading(); S.mode="system"; loadVoices();
     }
+    saveSet("ra_mode", S.mode);
     setModeUI(); announce(S.mode==="neural"?"Natural voice selected":"System voice selected");
   }
 
