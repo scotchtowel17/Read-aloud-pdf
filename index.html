@@ -196,6 +196,7 @@ window.__startApp = function(){
     progbar: document.getElementById("progbar"),
   };
 
+  const APP_VERSION="2026-07-06.2";
   const S = { pages:[], queue:[], idx:0, playing:false, paused:false, rate:1, voice:null, utter:null, curBoxes:[], _voices:[], mode:(getSet("ra_mode")||"neural"), neuralVoice:null };
   const NE = { tts:null, ctx:null, src:null, run:0, playIdx:0, loading:false, loadingPromise:null };
   const sleep = (ms)=> new Promise(r=>setTimeout(r,ms));
@@ -222,7 +223,7 @@ window.__startApp = function(){
   const DEBUG = /[?&]debug/i.test(location.search);
   const _dbg=[];
   function dbg(m){ if(!DEBUG) return; try{ _dbg.push(m); if(_dbg.length>18)_dbg.shift(); let el=document.getElementById("dbgpanel"); if(!el){ el=document.createElement("pre"); el.id="dbgpanel"; el.style.cssText="position:fixed;left:6px;right:6px;bottom:calc(104px + var(--safe-b));max-height:34vh;overflow:auto;z-index:99999;margin:0;background:rgba(8,8,8,.96);color:#5f5;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;padding:10px 12px;border-radius:10px;white-space:pre-wrap;-webkit-user-select:text;user-select:text;box-shadow:0 6px 24px rgba(0,0,0,.5)"; el.addEventListener("click",()=>{ try{ navigator.clipboard.writeText(_dbg.join("\n")); }catch(e){} toast("Diagnostics copied — paste them to me"); }); document.body.appendChild(el); } el.textContent="\u25BC DIAGNOSTICS \u2014 tap this box to copy, then paste to me:\n"+_dbg.join("\n"); }catch(e){} }
-  if(DEBUG){ dbg("iOS="+IS_IOS+" secureCtx="+window.isSecureContext+" crossOriginIsolated="+(self.crossOriginIsolated===true)); setTimeout(()=>dbg("system voices="+((synth&&synth.getVoices().length)||0)),500); }
+  if(DEBUG){ dbg("ver="+APP_VERSION+" iOS="+IS_IOS+" secureCtx="+window.isSecureContext+" crossOriginIsolated="+(self.crossOriginIsolated===true)); setTimeout(()=>dbg("system voices="+((synth&&synth.getVoices().length)||0)),500); }
   let _audioUnlocked=false;
   function unlockAudio(){
     if(_audioUnlocked || !IS_IOS) return;
@@ -301,6 +302,7 @@ window.__startApp = function(){
   if(els.theme){ els.theme.addEventListener("click", ()=>{ const next=effectiveTheme()==="dark"?"light":"dark"; document.documentElement.dataset.theme=next; try{ localStorage.setItem("theme",next); }catch(e){} paintTheme(); announce(next==="dark"?"Dark theme":"Light theme"); }); }
   try{ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", ()=>{ if(!document.documentElement.dataset.theme) paintTheme(); }); }catch(e){}
   paintTheme();
+  (function(){ if(!els.drop) return; const v=document.createElement("div"); v.style.cssText="margin-top:14px;font-size:11px;color:var(--ink-soft);opacity:.75"; v.textContent="Version "+APP_VERSION; els.drop.appendChild(v); })();
 
   els.file.addEventListener("change", e=>{ const f=e.target.files&&e.target.files[0]; if(f) openFile(f); });
   ["dragenter","dragover"].forEach(ev=>document.addEventListener(ev,e=>{ e.preventDefault(); els.drop&&els.drop.classList.add("hot"); }));
@@ -762,7 +764,7 @@ window.__startApp = function(){
     NE.loadingPromise=(async()=>{
       neuralBanner(true,"Preparing the natural voice\u2026 (one-time setup)");
       try{
-        const gpu=await detectWebGPU();
+        const gpu=!IS_IOS && await detectWebGPU();   // phones: q8+wasm is the reliable path (webgpu/fp32 means a ~300MB download and flaky mobile drivers)
         const KokoroTTS=await importKokoro();
         NE.tts=await KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX",{
           dtype: gpu ? "fp32" : "q8",
@@ -806,7 +808,7 @@ window.__startApp = function(){
     if(NE.ctx.state==="suspended"){ try{ await NE.ctx.resume(); }catch(e){} }
     dbg("neural start ctx="+(NE.ctx&&NE.ctx.state));
     if(NE.ctx.state!=="running"){   // e.g. iOS refused a non-gesture resume: never hang silently
-      fallbackToSystem(); toast("The natural voice couldn't start audio \u2014 using the system voice.");
+      NE.run++; fallbackToSystem(); toast("The natural voice couldn't start audio \u2014 using the system voice.");
       S.idx=startIdx; startKeepAlive(); speakNext(); return;
     }
     const results={}, waiters={}; const LOOK=2;
@@ -831,8 +833,14 @@ window.__startApp = function(){
     })();
     NE.playIdx=startIdx;
     while(runId===NE.run && NE.playIdx<S.queue.length){
-      const r=await resultOf(NE.playIdx);
+      const genSlow=setTimeout(()=>{ if(runId===NE.run) neuralBanner(true,"Generating audio\u2026"); },1500);
+      const r=await Promise.race([resultOf(NE.playIdx), sleep(window.__genTimeoutMs||(IS_IOS?60000:30000)).then(()=>null)]);
+      clearTimeout(genSlow); neuralBanner(false);
       if(runId!==NE.run) break;
+      if(!r){   // this device can't generate audio fast enough: switch to a voice that keeps up
+        NE.run++; fallbackToSystem(); toast("The natural voice is too slow on this device \u2014 using the system voice.");
+        S.idx=NE.playIdx; startKeepAlive(); speakNext(); return;
+      }
       highlight(S.queue[NE.playIdx]);
       if(S.docKey) saveSet(S.docKey, String(NE.playIdx));
       updateProgress(NE.playIdx);
@@ -840,7 +848,7 @@ window.__startApp = function(){
       const how=await playPCM(r.pcm, r.sr, runId);
       if(runId!==NE.run) break;
       if(how==="stalled" && NE.ctx && NE.ctx.state!=="running"){   // audio never actually played: switch to a voice that will
-        fallbackToSystem(); toast("The natural voice couldn't start audio \u2014 using the system voice.");
+        NE.run++; fallbackToSystem(); toast("The natural voice couldn't start audio \u2014 using the system voice.");
         S.idx=NE.playIdx; startKeepAlive(); speakNext(); return;
       }
       delete results[NE.playIdx];   // release the played chunk
