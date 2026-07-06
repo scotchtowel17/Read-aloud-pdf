@@ -214,6 +214,7 @@ window.__startApp = function(){
   const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==="MacIntel" && (navigator.maxTouchPoints||0) > 1);
   const DPR = Math.min(window.devicePixelRatio || 1, 2);
   const MAX_CHUNK = 360;   // keep whole sentences together for natural prosody; only very long sentences split, at clause punctuation
+  if(!getSet("ra_mode") && IS_IOS) S.mode="system";   // iOS: start with the always-instant system voice; Natural stays one tap away
 
   if(!synth){ toast("This browser has no speech engine."); }
 
@@ -247,7 +248,7 @@ window.__startApp = function(){
   function loadVoices(){
     if(S.mode==="neural") return;   // neural mode shows its own curated Emma/George list
     const list = synth ? synth.getVoices() : [];
-    if(!list.length) return;
+    if(!list.length){ els.voice.innerHTML=""; S._voices=[]; return; }   // never leave stale neural entries in system mode
     list.sort((a,b)=> voiceScore(b)-voiceScore(a) || (a.name||"").localeCompare(b.name||""));
     els.voice.innerHTML="";
     list.forEach((v,i)=>{ const o=document.createElement("option"); o.value=String(i); o.textContent=labelVoice(v); els.voice.appendChild(o); });
@@ -256,6 +257,12 @@ window.__startApp = function(){
   }
   if(synth){ synth.onvoiceschanged=loadVoices; loadVoices(); }
   if(S.mode==="neural"){ populateNeuralVoices(); }   // show Emma/George right away, before the model finishes loading
+  if(!getSet("ra_mode") && S.mode==="neural"){
+    (async()=>{ try{
+      const capable=(self.crossOriginIsolated===true) || await detectWebGPU();
+      if(!capable && !getSet("ra_mode") && S.mode==="neural" && !S.playing && !NE.tts && !NE.loadingPromise){ S.mode="system"; setModeUI(); loadVoices(); }   // too slow to be a good default here
+    }catch(e){} })();
+  }
   els.voice.addEventListener("change", ()=>{
     if(S.mode==="neural"){
       S.neuralVoice = els.voice.value || S.neuralVoice;
@@ -628,9 +635,18 @@ window.__startApp = function(){
     if(S.mode==="neural"){
       if(NE.tts){ speakNeuralFrom(i); }
       else {
+        const rid=NE.run;   // ignore this load's callbacks if a newer Play/jump/stop superseded it
         neuralBanner(true,"Preparing the natural voice\u2026 (one-time setup)");
-        loadNeural().then(()=>{ if(S.playing && S.mode==="neural") speakNeuralFrom(i); })
-          .catch(()=>{ if(S.playing){ fallbackToSystem(); toast("Natural voice unavailable \u2014 using the system voice."); startKeepAlive(); speakNext(); } });
+        const waitBudget=new Promise((_,rej)=>setTimeout(()=>rej(new Error("neural-load-timeout")), window.__neuralTimeoutMs||25000));
+        Promise.race([loadNeural(), waitBudget]).then(()=>{
+          if(S.playing && !S.paused && S.mode==="neural" && NE.run===rid) speakNeuralFrom(i);
+        }).catch(()=>{
+          if(!S.playing || S.mode!=="neural" || NE.run!==rid) return;
+          neuralBanner(false); fallbackToSystem();
+          toast("The natural voice isn't ready \u2014 reading with the system voice for now.");
+          if(NE.loadingPromise){ NE.loadingPromise.then(()=>{ if(NE.tts && S.mode==="system") toast("Natural voice is ready \u2014 tap the Voice button to switch."); }).catch(()=>{}); }
+          startKeepAlive(); speakNext();
+        });
       }
     }
     else { startKeepAlive(); speakNext(); }
@@ -668,6 +684,7 @@ window.__startApp = function(){
     if(!S.queue.length) return;
     if(!S.playing){ startFrom(Math.min(S.idx,S.queue.length-1)); return; }
     if(S.mode==="neural"){
+      if(!NE.tts && !S.paused){ stopReading(); announce("Stopped"); return; }   // pausing while the voice is still preparing just stops
       if(S.paused){ if(NE.ctx) NE.ctx.resume(); S.paused=false; } else { if(NE.ctx) NE.ctx.suspend(); S.paused=true; }
     } else {
       if(!synth) return;
@@ -761,7 +778,7 @@ window.__startApp = function(){
     })();
     return NE.loadingPromise;
   }
-  function fallbackToSystem(){ S.mode="system"; saveSet("ra_mode","system"); setModeUI(); loadVoices(); }
+  function fallbackToSystem(){ S.mode="system"; setModeUI(); loadVoices(); }   // session-only: a transient failure must not overwrite the saved preference
   function prettyVoice(id){
     const acc=id[0]==="a"?"US":id[0]==="b"?"UK":id[0];
     const gen=id[1]==="f"?"female":id[1]==="m"?"male":"";
@@ -788,6 +805,10 @@ window.__startApp = function(){
     if(!NE.ctx){ try{ NE.ctx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){ toast("Audio is unavailable."); return; } }
     if(NE.ctx.state==="suspended"){ try{ await NE.ctx.resume(); }catch(e){} }
     dbg("neural start ctx="+(NE.ctx&&NE.ctx.state));
+    if(NE.ctx.state!=="running"){   // e.g. iOS refused a non-gesture resume: never hang silently
+      fallbackToSystem(); toast("The natural voice couldn't start audio \u2014 using the system voice.");
+      S.idx=startIdx; startKeepAlive(); speakNext(); return;
+    }
     const results={}, waiters={}; const LOOK=2;
     const resultOf=(i)=> results[i]!==undefined ? Promise.resolve(results[i]) : new Promise(res=>{ (waiters[i]=waiters[i]||[]).push(res); });
     (async ()=>{
@@ -816,8 +837,12 @@ window.__startApp = function(){
       if(S.docKey) saveSet(S.docKey, String(NE.playIdx));
       updateProgress(NE.playIdx);
       dbg("play idx="+NE.playIdx+" samples="+((r.pcm&&r.pcm.length)||0)+" ctx="+(NE.ctx&&NE.ctx.state));
-      await playPCM(r.pcm, r.sr, runId);
+      const how=await playPCM(r.pcm, r.sr, runId);
       if(runId!==NE.run) break;
+      if(how==="stalled" && NE.ctx && NE.ctx.state!=="running"){   // audio never actually played: switch to a voice that will
+        fallbackToSystem(); toast("The natural voice couldn't start audio \u2014 using the system voice.");
+        S.idx=NE.playIdx; startKeepAlive(); speakNext(); return;
+      }
       delete results[NE.playIdx];   // release the played chunk
       NE.playIdx++;
     }
@@ -825,12 +850,16 @@ window.__startApp = function(){
   }
   function playPCM(pcm,sr,runId){
     return new Promise(resolve=>{
-      if(runId!==NE.run || !pcm || !pcm.length){ resolve(); return; }
+      if(runId!==NE.run || !pcm || !pcm.length){ resolve("skip"); return; }
       let buf;
-      try{ buf=NE.ctx.createBuffer(1,pcm.length,sr); buf.getChannelData(0).set(pcm); }catch(e){ resolve(); return; }
+      try{ buf=NE.ctx.createBuffer(1,pcm.length,sr); buf.getChannelData(0).set(pcm); }catch(e){ resolve("skip"); return; }
       const src=NE.ctx.createBufferSource(); src.buffer=buf; src.connect(NE.ctx.destination); NE.src=src;
-      src.onended=()=>{ if(NE.src===src) NE.src=null; resolve(); };
-      try{ src.start(); }catch(e){ resolve(); }
+      let settled=false;
+      const done=(how)=>{ if(settled) return; settled=true; clearTimeout(wd); if(NE.src===src) NE.src=null; resolve(how); };
+      // watchdog: if onended never fires (e.g. a suspended iOS context), don't hang the read loop forever
+      const wd=setTimeout(()=>{ try{ src.stop(); }catch(e){} done("stalled"); }, Math.ceil((pcm.length/sr)*1000)+4000);
+      src.onended=()=>done("ok");
+      try{ src.start(); }catch(e){ done("skip"); }
     });
   }
   function setModeUI(){
