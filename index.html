@@ -219,7 +219,7 @@ window.__startApp = function(){
   // ---------------- Diagnostics (append ?debug to the URL) + iOS audio unlock ----------------
   const DEBUG = /[?&]debug/i.test(location.search);
   const _dbg=[];
-  function dbg(m){ if(!DEBUG) return; try{ _dbg.push(m); if(_dbg.length>16)_dbg.shift(); let el=document.getElementById("dbgpanel"); if(!el){ el=document.createElement("pre"); el.id="dbgpanel"; el.style.cssText="position:fixed;left:6px;right:6px;bottom:6px;max-height:42vh;overflow:auto;z-index:999;margin:0;background:rgba(10,10,10,.92);color:#6f6;font:11px/1.35 ui-monospace,SFMono-Regular,monospace;padding:8px 10px;border-radius:8px;white-space:pre-wrap"; document.body.appendChild(el); } el.textContent=_dbg.join("\n"); }catch(e){} }
+  function dbg(m){ if(!DEBUG) return; try{ _dbg.push(m); if(_dbg.length>18)_dbg.shift(); let el=document.getElementById("dbgpanel"); if(!el){ el=document.createElement("pre"); el.id="dbgpanel"; el.style.cssText="position:fixed;left:6px;right:6px;top:calc(6px + var(--safe-t));max-height:60vh;overflow:auto;z-index:99999;margin:0;background:rgba(8,8,8,.96);color:#5f5;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;padding:10px 12px;border-radius:10px;white-space:pre-wrap;-webkit-user-select:text;user-select:text;box-shadow:0 6px 24px rgba(0,0,0,.5)"; el.addEventListener("click",()=>{ try{ navigator.clipboard.writeText(_dbg.join("\n")); }catch(e){} toast("Diagnostics copied — paste them to me"); }); document.body.appendChild(el); } el.textContent="\u25BC DIAGNOSTICS \u2014 tap this box to copy, then paste to me:\n"+_dbg.join("\n"); }catch(e){} }
   if(DEBUG){ dbg("iOS="+IS_IOS+" secureCtx="+window.isSecureContext+" crossOriginIsolated="+(self.crossOriginIsolated===true)); setTimeout(()=>dbg("system voices="+((synth&&synth.getVoices().length)||0)),500); }
   let _audioUnlocked=false;
   function unlockAudio(){
@@ -642,8 +642,9 @@ window.__startApp = function(){
     if(S.docKey) saveSet(S.docKey, String(S.idx));
     updateProgress(S.idx);
     const u=new SpeechSynthesisUtterance(item.spoken);
-    u.rate=S.rate; u.pitch=1;
-    if(S.voice){ u.voice=S.voice; u.lang=S.voice.lang; }
+    u.rate=S.rate; u.pitch=1; u.volume=1;
+    if(IS_IOS){ u.lang=(S.voice&&S.voice.lang)||"en-US"; }   // iOS speaks reliably with the default voice; pinning a Siri/enhanced voice can be silent
+    else if(S.voice){ u.voice=S.voice; u.lang=S.voice.lang; }
     u.__t0=(typeof performance!=="undefined")?performance.now():0; u.__len=(item.spoken||"").length;
     u.onstart=()=>dbg("onstart");
     dbg("speak len="+u.__len+" voice="+((S.voice&&S.voice.name)||"default")+" rate="+S.rate);
