@@ -196,7 +196,7 @@ window.__startApp = function(){
     progbar: document.getElementById("progbar"),
   };
 
-  const APP_VERSION="2026-07-06.3";
+  const APP_VERSION="2026-07-06.4";
   const S = { pages:[], queue:[], idx:0, playing:false, paused:false, rate:1, voice:null, utter:null, curBoxes:[], _voices:[], mode:(getSet("ra_mode")||"neural"), neuralVoice:null };
   const NE = { tts:null, ctx:null, src:null, run:0, playIdx:0, loading:false, loadingPromise:null };
   const sleep = (ms)=> new Promise(r=>setTimeout(r,ms));
@@ -207,8 +207,18 @@ window.__startApp = function(){
     if(window.__mockKokoro) return window.__mockKokoro;   // test seam
     const urls=["https://cdn.jsdelivr.net/npm/kokoro-js@1/+esm","https://cdn.jsdelivr.net/npm/kokoro-js@1/dist/kokoro.web.js"];
     let last;
-    for(const u of urls){ try{ const m=await import(u); const K=m.KokoroTTS||m.default; if(K) return K; }catch(e){ last=e; } }
+    for(const u of urls){ try{ const m=await import(u); const K=m.KokoroTTS||m.default; if(K){ NE._mod=m; return K; } }catch(e){ last=e; } }
     throw last || new Error("Could not load the natural voice library.");
+  }
+  async function forceSingleThreadOrt(){
+    // iOS Safari: the multi-threaded wasm backend (enabled by cross-origin isolation)
+    // is known to deadlock during inference. One thread is slower but completes.
+    const envs=[];
+    try{ if(NE._mod && NE._mod.env) envs.push(NE._mod.env); }catch(e){}
+    try{ const t=await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3/+esm"); if(t && t.env) envs.push(t.env); }catch(e){}
+    let ok=false;
+    for(const env of envs){ try{ if(env.backends && env.backends.onnx && env.backends.onnx.wasm){ env.backends.onnx.wasm.numThreads=1; ok=true; } }catch(e){} }
+    dbg("ort threads -> 1 ("+(ok?"applied":"no env found")+")");
   }
   const synth = window.speechSynthesis;
   try{ if(navigator.storage && navigator.storage.persist){ navigator.storage.persist(); } }catch(e){}
@@ -775,6 +785,7 @@ window.__startApp = function(){
       try{
         const gpu=!IS_IOS && await detectWebGPU();   // phones: q8+wasm is the reliable path (webgpu/fp32 means a ~300MB download and flaky mobile drivers)
         const KokoroTTS=await importKokoro();
+        if(IS_IOS) await forceSingleThreadOrt();
         NE.tts=await KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX",{
           dtype: gpu ? "fp32" : "q8",
           device: gpu ? "webgpu" : "wasm",
@@ -828,13 +839,14 @@ window.__startApp = function(){
       while(runId===NE.run && g<S.queue.length){
         if(g > NE.playIdx + LOOK){ await sleep(40); continue; }
         let pcm=new Float32Array(0), sr=24000;
+        dbg("gen start idx="+g+" voice="+(S.neuralVoice||"bf_emma"));
         try{
           const out=await NE.tts.generate(S.queue[g].spoken,{ voice:S.neuralVoice||"bf_emma", speed:S.rate });
           let a = out && (out.audio!==undefined?out.audio:(out.data!==undefined?out.data:out));
           if(a && typeof a.getChannelData==="function") a=a.getChannelData(0);
           if(a && !(a instanceof Float32Array)) a=Float32Array.from(a);
           pcm=a||pcm; sr=(out&&(out.sampling_rate||out.sample_rate))||sr;
-        }catch(e){ console.error("neural generation failed",e); }
+        }catch(e){ console.error("neural generation failed",e); dbg("gen ERROR idx="+g+" "+((e&&e.message)||e)); }
         if(runId!==NE.run) return;
         results[g]={pcm,sr}; (waiters[g]||[]).forEach(r=>r(results[g])); delete waiters[g];
       dbg("gen idx="+g+" samples="+((pcm&&pcm.length)||0));
